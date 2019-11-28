@@ -1,0 +1,33 @@
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:context="com.example.privacyassessment.ScrollingActivity">
+
+    <item
+        android:id="@+id/action_download_files"
+        android:orderInCategory="70"
+        android:title="Download HOSTS-files..."
+        android:onClick="onDownloadHostsFiles"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_view_download_log"
+        android:orderInCategory="80"
+        android:title="View download directory..."
+        android:onClick="onViewDownloadLog"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_parse_hosts_files"
+        android:orderInCategory="90"
+        android:title="Merge &amp; parse HOSTS-files"
+        android:onClick="onMergeAndParseHostsFiles"
+        app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_settings"
+        android:orderInCategory="100"
+        android:title="@string/action_settings"
+        android:onClick="onSettingsMenuItemClicked"
+        app:showAsAction="never" />
+</menu>
