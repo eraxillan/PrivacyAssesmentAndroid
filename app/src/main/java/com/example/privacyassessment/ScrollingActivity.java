@@ -677,6 +677,8 @@ public class ScrollingActivity extends AppCompatActivity
 
             Log.i(LOG_TAG, "HOSTS-file domain count: " + hosts.length);
 
+            long obsoleteHostCount = 0L;
+            long actualHostCount = 0L;
             long workingHostCount = 0L;
             long blockedHostCount = 0L;
             for (int i = 0; i < hosts.length; i ++) {
@@ -684,6 +686,7 @@ public class ScrollingActivity extends AppCompatActivity
                     InetAddress[] hostIpList = InetAddress.getAllByName(hosts[i]);
                     assert hostIpList.length > 0;
 
+                    actualHostCount++;
                     //Log.i(LOG_TAG, "Domain '" + hosts[i] + "' IP addresses are " + Arrays.toString(hostIpList));
                     addLineToJournal("Domain '" + hosts[i] + "' IP addresses are " + Arrays.toString(hostIpList));
 
@@ -701,6 +704,7 @@ public class ScrollingActivity extends AppCompatActivity
                         blockedHostCount++;
                 } catch (UnknownHostException exc) {
                     Log.e(LOG_TAG, "IP address of a host '" + hosts[i] + "' could not be determined");
+                    obsoleteHostCount++;
                 } catch (IOException exc) {
                     Log.e(LOG_TAG, "Network error occurs");
                 }
@@ -710,10 +714,15 @@ public class ScrollingActivity extends AppCompatActivity
                 if (isCancelled()) break;
             }
 
+            Log.i(LOG_TAG, "");
+            Log.i(LOG_TAG, "OBSOLETE HOSTS: " + obsoleteHostCount);
+            Log.i(LOG_TAG, "ACTUAL HOSTS: " + actualHostCount);
             Log.i(LOG_TAG, "WORKING HOSTS: " + workingHostCount);
             Log.i(LOG_TAG, "BLOCKED HOSTS: " + blockedHostCount);
             Log.i(LOG_TAG, "TOTAL HOSTS: 1 = " + hosts.length + ", 2 = " + (workingHostCount + blockedHostCount));
             addLineToJournal("");
+            addLineToJournal("OBSOLETE HOSTS: " + obsoleteHostCount);
+            addLineToJournal("ACTUAL HOSTS: " + actualHostCount);
             addLineToJournal("WORKING HOSTS: " + workingHostCount);
             addLineToJournal("BLOCKED HOSTS: " + blockedHostCount);
             addLineToJournal("TOTAL HOSTS: 1 = " + hosts.length + ", 2 = " + (workingHostCount + blockedHostCount));
