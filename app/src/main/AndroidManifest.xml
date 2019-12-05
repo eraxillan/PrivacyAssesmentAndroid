@@ -8,9 +8,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <!-- We need Internet access permission to connect remote host -->
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- We need External Storage to download/remove HOSTS-files -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
     <!-- "android:usesCleartextTraffic" help DownloadManager to work properly,
          see https://stackoverflow.com/a/53985701/1794089 -->

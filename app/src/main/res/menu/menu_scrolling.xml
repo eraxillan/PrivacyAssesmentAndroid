@@ -30,4 +30,11 @@
         android:title="@string/action_settings"
         android:onClick="onSettingsMenuItemClicked"
         app:showAsAction="never" />
+
+    <item
+        android:id="@+id/action_quit"
+        android:orderInCategory="110"
+        android:title="Quit"
+        android:onClick="onQuitMenuItemClicked"
+        app:showAsAction="never" />
 </menu>

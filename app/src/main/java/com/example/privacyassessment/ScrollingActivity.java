@@ -1,23 +1,17 @@
 package com.example.privacyassessment;
 
-import android.app.Activity;
 import android.app.DownloadManager;
 import android.app.ProgressDialog;
 import android.content.ActivityNotFoundException;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
-import android.content.IntentFilter;
 
-import android.content.pm.PackageManager;
-import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.PorterDuff;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
-import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
 
@@ -31,11 +25,7 @@ import androidx.appcompat.widget.Toolbar;
 import androidx.core.app.ActivityCompat;
 import androidx.core.widget.NestedScrollView;
 
-import android.os.Environment;
-import android.os.Handler;
-import android.text.Editable;
-import android.text.Selection;
-import android.text.SpannableString;
+import android.os.PowerManager;
 import android.text.method.ScrollingMovementMethod;
 import android.util.Log;
 import android.view.View;
@@ -50,30 +40,60 @@ import java.io.FileFilter;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.ref.WeakReference;
+import java.net.HttpURLConnection;
 import java.net.InetAddress;
+import java.net.URL;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import static java.lang.StrictMath.max;
-
-
 public class ScrollingActivity extends AppCompatActivity
         implements ActivityCompat.OnRequestPermissionsResultCallback {
 
-    private static final String LOG_TAG = "OSO";
-    private static final int PERMISSION_REQUEST_STORAGE_RW = 0;
+    // NOTE: List of Pair<String,String> cannot be passed to vararg function,
+    //       so we need to describe it as separate structure
+    private static class RemoteFileDescription {
+        String m_remoteUrl;
+        String m_localFileName;
 
-    private View m_layout;
+        RemoteFileDescription(String remoteUrl, String localFileName) {
+            m_remoteUrl = remoteUrl;
+            m_localFileName = localFileName;
+        }
+    }
+
+    private static class RemoteFileDownloadResult {
+        boolean isValid;
+        String path;
+        long length;
+        String errorMessage;
+    }
+
+    private interface OnDownloadFinishedListener {
+        void onSuccess();
+        void onFailure(String message);
+    }
+
+    private interface IReportable {
+        void addMessage(String message);
+    }
+
+    private static final String LOG_TAG = "OSO";
+
+    //private View m_layout;
     private MenuItem m_downloadHostsItem;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
         setContentView(R.layout.activity_scrolling);
-        m_layout = findViewById(R.id.main_layout);
-        // FIXME:
+        //m_layout = findViewById(R.id.main_layout);
+
         TextView txtJournal = findViewById(R.id.txtJournal);
         txtJournal.setText("");
         txtJournal.setMovementMethod(new ScrollingMovementMethod());
@@ -89,84 +109,11 @@ public class ScrollingActivity extends AppCompatActivity
                         .setAction("Action", null).show();
             }
         });
-
-        // First of all, check whether we have permissions to read/write from/to "Download" directory
-        if (!hasRuntimePermissions(this, m_storagePermissions)) {
-            requestRuntimePermissions(m_storagePermissions);
-        }
-        initDownloadManager();
-
-        // FIXME: begin test
-        String testContents;
-        testContents =
-                "# Title: StevenBlack/hosts\n" +
-                        "#\n" +
-                        "# ===============================================================\n" +
-                        "\n" +
-                        "127.0.0.1 localhost\n" +
-                        "::1 localhost\n" +
-                        "fe80::1%lo0 localhost\n" +
-                        "0.0.0.0 0.0.0.0\n" +
-                        "\n" +
-                        "# http://stevenblack.com\n" +
-                        "0.0.0.0 adservice.google.com.vn\n" +
-                        "0.0.0.0 jackbootedroom.com  ## phishing\n" +
-                        "\n" +
-                        "0.0.0.0 ssl-google-analytics.l.google.com\n" +
-                        "tinypic.info\n" +
-                        "\n";
-
-        File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        File hostsFile = new File(combinePaths(downloadDir.getPath(), "hosts_1.txt"));
-        testContents = readTextFile(hostsFile);
-
-        // FIXME: first of all check whether Internet working!!!
-        // FIXME: place this long-running code in da AsyncTask!!!
-
-        List<String> hostsUrls = new ArrayList<>();
-        if (parseHostsFile(testContents, hostsUrls)) {
-
-            /*Log.i(LOG_TAG, "HOSTS-file '" + "hosts_1.txt" + "' was parsed successfully");
-            Log.i(LOG_TAG, "HOSTS-file domain count: " + hostsUrls.size());
-            //Log.i(LOG_TAG, hostsUrls.toString());
-
-            long workingHostCount = 0;
-            long blockedHostCount = 0;
-
-            for (String host : hostsUrls) {
-                try {
-                    InetAddress[] hostIpList = InetAddress.getAllByName(host);
-                    assert hostIpList.length > 0;
-                    for (InetAddress hostIp : hostIpList) {
-                        if (hostIp.isReachable(1000)) { // ms
-                            workingHostCount++;
-                        } else {
-                            blockedHostCount++;
-                        }
-                    }
-                } catch (UnknownHostException exc) {
-                    Log.e(LOG_TAG, "IP address of a host '" + host + "' could not be determined");
-                } catch (IOException exc) {
-                    Log.e(LOG_TAG, "Network error occurs");
-                }
-            }
-
-            Log.i(LOG_TAG, "WORKING HOSTS: " + workingHostCount);
-            Log.i(LOG_TAG, "BLOCKED HOSTS: " + blockedHostCount);
-            Log.i(LOG_TAG, "TOTAL HOSTS: " + hostsUrls.size());*/
-
-            new HostsReachabilityChecker().execute(hostsUrls.toArray(new String[0]));
-        } else {
-            Log.e(LOG_TAG, "PARSE FAILED");
-        }
-        // FIXME: end test
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
-
-        destroyDownloadManager();
     }
 
     @Override
@@ -197,18 +144,20 @@ public class ScrollingActivity extends AppCompatActivity
     ////////////////////////////////////////////////////////////////////////////////////////////////
 
     public void onSettingsMenuItemClicked(MenuItem item) {
-        Toast.makeText(this, "Not implemented yet...", Toast.LENGTH_LONG).show();
+        showToast("Not implemented yet...", Color.GREEN, Color.BLACK);
+    }
+
+    public void onQuitMenuItemClicked(MenuItem item) {
+        quitApplication();
     }
 
     public void onDownloadHostsFiles(MenuItem item) {
-        Toast.makeText(this, "File was successfully downloaded!", Toast.LENGTH_LONG).show();
+        showToast("Starting download...", Color.GREEN, Color.BLACK);
 
         startDownloadHostsFileFromList(getDefaultHostsFileList());
     }
 
     public void onViewDownloadLog(MenuItem item) {
-        //startActivity(new Intent(DownloadManager.ACTION_VIEW_DOWNLOADS));
-
         // Open the Android Download Manager
         // FIXME: do not work properly on LineageOS 16.0 + Galaxy S7:
         //        just FileManager opened in root directory
@@ -221,343 +170,86 @@ public class ScrollingActivity extends AppCompatActivity
         }
     }
 
+    /**
+     * Load, merge and parse previously downloaded HOSTS-files
+     * @param item Menu item object
+     */
     public void onMergeAndParseHostsFiles(MenuItem item) {
-        // Load, merge and parse previously downloaded HOSTS-files
-        File downloadDirectory = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        assert downloadDirectory != null;
-        assert downloadDirectory.exists();
-        File[] hostsFiles = downloadDirectory.listFiles(new FileFilter() {
+
+        // Get private storage object
+        File privateStorageDir = this.getFilesDir();
+        if (privateStorageDir == null || !privateStorageDir.exists()) {
+            Log.e(LOG_TAG, "Hosts parser: unable to obtain Private Internal Storage object");
+            return;
+        }
+        Log.i(LOG_TAG, String.format("Hosts parser: Private Internal Storage path is '%s'",
+                privateStorageDir.getAbsolutePath()));
+
+        // List only HOSTS-files
+        File[] hostsFiles = privateStorageDir.listFiles(new FileFilter() {
             @Override
             public boolean accept(File file) {
                 Log.e(LOG_TAG, file.getName());
                 return (file.getName().startsWith("hosts_") && file.getName().endsWith(".txt"));
             }
         });
-        if (hostsFiles != null) {
-            Log.e(LOG_TAG, "HOSTS-file count: " + hostsFiles.length);
-            showToast("HOSTS-files found: " + hostsFiles.length, Color.GREEN, Color.BLACK);
-
-            for (File hostsFile : hostsFiles) {
-                String contents = readTextFile(hostsFile);
-                //
-            }
-        } else {
+        if (hostsFiles == null || hostsFiles.length == 0) {
+            Log.e(LOG_TAG, "No HOSTS-files found! Please re-download them");
             showToast("No HOSTS-files found! Please re-download them", Color.RED, Color.BLACK);
+            return;
+        }
+
+        Log.e(LOG_TAG, "HOSTS-file found: " + hostsFiles.length);
+        showToast("HOSTS-files found: " + hostsFiles.length, Color.GREEN, Color.BLACK);
+
+        Log.v(LOG_TAG, "Starting HOSTS-files merging into big one...");
+        StringBuilder finalHostsFile = new StringBuilder();
+        for (File hostsFile : hostsFiles) {
+            Log.i(LOG_TAG, String.format("Merge HOSTS-file '%s' with length %d Kb",
+                    hostsFile.getAbsolutePath(),
+                    (int)((float)hostsFile.length()/1024)));
+
+            String contents = readTextFile(hostsFile);
+            finalHostsFile.append(contents).append("\n\n\n### OSO MERGED ###\n\n\n");
+        }
+
+        if (finalHostsFile.length() == 0) {
+            Log.e(LOG_TAG, "Merged HOSTS-file is empty!");
+            showToast("Merged HOSTS-file is empty!", Color.RED, Color.BLACK);
+            return;
+        }
+        Log.v(LOG_TAG, "HOSTS-files were successfully merged");
+
+        Log.v(LOG_TAG, "Starting parse of merged HOSTS-file...");
+        List<String> hostsUrls = new ArrayList<>();
+        if (parseHostsFile(finalHostsFile.toString(), hostsUrls)) {
+            Log.i(LOG_TAG, String.format("Merged HOSTS-file was parsed successfully: %d records found", hostsUrls.size()));
+
+            HostsAvailabilityChecker task = new HostsAvailabilityChecker(ScrollingActivity.this, m_reportable);
+            task.execute(hostsUrls.toArray(new String[0]));
         }
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
-    // Runtime permissions stuff
-    // NOTE: runtime permissions introduced only in Android 6.0 (M, or Marshmallow);
-    //       earlier versions used just AndroidManifest.xml ones
 
-    String[] m_storagePermissions = {android.Manifest.permission.READ_EXTERNAL_STORAGE, android.Manifest.permission.WRITE_EXTERNAL_STORAGE};
-
-    public static boolean hasRuntimePermissions(Activity activity, final String... permissions) {
-        if (/*android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&*/ activity != null && permissions != null) {
-            for (String permission : permissions) {
-                if (ActivityCompat.checkSelfPermission(activity, permission) != PackageManager.PERMISSION_GRANTED) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
-
-    public static boolean needRuntimePermissionsRationale(Activity activity, final String... permissions) {
-        for (String permission : permissions) {
-            if (ActivityCompat.shouldShowRequestPermissionRationale(activity, permission))
-                return true;
-        }
-        return false;
-    }
-
-    /**
-     * Requests the specified permissions, each from the list {@link android.Manifest.permission}.
-     * If an additional rationale should be displayed, the user has to launch the request from
-     * a SnackBar that includes additional information.
-     */
-    public void requestRuntimePermissions(final String... permissions) {
-
-        // Permission has not been granted and must be requested
-        if (needRuntimePermissionsRationale(this, permissions)) {
-            // Provide an additional rationale to the user if the permission was not granted
-            // and the user would benefit from additional context for the use of the permission.
-            // Display a SnackBar with cda button to request the missing permission.
-            Snackbar.make(m_layout, /*R.string.camera_access_required*/ "(1) We need external storage read/write access to download/update HOSTS-files",
-                    Snackbar.LENGTH_INDEFINITE).setAction(/*R.string.ok*/"Ok", new View.OnClickListener() {
-                @Override
-                public void onClick(View view) {
-                    // Request the permission
-                    ActivityCompat.requestPermissions(ScrollingActivity.this,
-                            permissions,
-                            PERMISSION_REQUEST_STORAGE_RW);
-                }
-            }).show();
-
-        } else {
-            Snackbar.make(m_layout, /*R.string.camera_unavailable*/ "(2) We need external storage read/write access to download/update HOSTS-files",
-                    Snackbar.LENGTH_SHORT).show();
-            // Request the permission. The result will be received in onRequestPermissionResult().
-            ActivityCompat.requestPermissions(this,
-                    permissions, PERMISSION_REQUEST_STORAGE_RW);
-        }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
-                                           @NonNull int[] grantResults) {
-        if (requestCode == PERMISSION_REQUEST_STORAGE_RW) {
-            // Request for external storage read/write permissions
-            if (grantResults.length == 2
-                    && grantResults[0] == PackageManager.PERMISSION_GRANTED
-                    && grantResults[1] == PackageManager.PERMISSION_GRANTED) {
-                // Permission has been granted
-                Toast.makeText(this, "External storage read/write permissions granted, thanks!", Toast.LENGTH_LONG).show();
-            } else {
-                // Permission request was denied: show error message, wait while user read it and exit application
-                Toast.makeText(this, "External storage read/write permissions were declined, unable to work further!", Toast.LENGTH_LONG).show();
-
-                new Handler().postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        exitApplication();
-                    }
-                }, 3000);
-            }
-        }
-    }
-
-    ////////////////////////////////////////////////////////////////////////////////////////////////
-    private DownloadManager m_downloadManager;
-    private List<Long> m_downloadIds = new ArrayList<>();
-
-    private String downloadStatusMessage(Cursor c) {
-        String msg = "";
-
-        switch (c.getInt(c.getColumnIndex(DownloadManager.COLUMN_STATUS))) {
-            case DownloadManager.STATUS_FAILED:
-                msg = "download FAILED";
-                break;
-
-            case DownloadManager.STATUS_PAUSED:
-                msg = "download paused";
-                break;
-
-            case DownloadManager.STATUS_PENDING:
-                msg = "download pending";
-                break;
-
-            case DownloadManager.STATUS_RUNNING:
-                msg = "download in progress";
-                break;
-
-            case DownloadManager.STATUS_SUCCESSFUL:
-                msg = "download complete";
-                break;
-
-            default:
-                msg = "<objective in danger!!!>";
-                break;
-        }
-
-        return msg;
-    }
-
-    private String downloadFailReason(Cursor c) {
-        String msg = "";
-        int reason = c.getInt(c.getColumnIndex(DownloadManager.COLUMN_REASON));
-        switch (reason) {
-            case DownloadManager.ERROR_CANNOT_RESUME:
-                msg = "ERROR_CANNOT_RESUME";
-                break;
-            case DownloadManager.ERROR_DEVICE_NOT_FOUND:
-                msg = "ERROR_DEVICE_NOT_FOUND";
-                break;
-            case DownloadManager.ERROR_FILE_ALREADY_EXISTS:
-                msg = "ERROR_FILE_ALREADY_EXISTS";
-                break;
-            case DownloadManager.ERROR_FILE_ERROR:
-                msg = "ERROR_FILE_ERROR";
-                break;
-            case DownloadManager.ERROR_HTTP_DATA_ERROR:
-                msg = "ERROR_HTTP_DATA_ERROR";
-                break;
-            case DownloadManager.ERROR_INSUFFICIENT_SPACE:
-                msg = "ERROR_INSUFFICIENT_SPACE";
-                break;
-            case DownloadManager.ERROR_TOO_MANY_REDIRECTS:
-                msg = "ERROR_TOO_MANY_REDIRECTS";
-                break;
-            case DownloadManager.ERROR_UNHANDLED_HTTP_CODE:
-                msg = "ERROR_UNHANDLED_HTTP_CODE";
-                break;
-            case DownloadManager.ERROR_UNKNOWN:
-                msg = "ERROR_UNKNOWN";
-                break;
-        }
-        return msg;
-    }
-
-    BroadcastReceiver onComplete = new BroadcastReceiver() {
-        public void onReceive(Context context, Intent intent) {
-
-            // Get the DMID from the download manager
-            long downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
-
-            // Remove it from our list
-            m_downloadIds.remove(downloadId);
-
-            // if list is empty means all downloads completed
-
-            if (m_downloadIds.isEmpty()) {
-                Log.i(LOG_TAG, "All HOSTS-files were successfully downloaded!");
-                showToast("All HOSTS-files were successfully downloaded!", Color.GREEN, Color.BLACK);
-                m_downloadHostsItem.setEnabled(true);
-            } else {
-                Log.i(LOG_TAG, "Downloads in progress: " + m_downloadIds.size());
-
-                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                Cursor c = dm.query(new DownloadManager.Query().setFilterById(downloadId));
-                assert c != null;
-                c.moveToFirst();
-
-                Log.d(getClass().getName(),
-                        "COLUMN_ID: "
-                                + c.getLong(c.getColumnIndex(DownloadManager.COLUMN_ID)));
-                Log.d(getClass().getName(),
-                        "COLUMN_BYTES_DOWNLOADED_SO_FAR: "
-                                + c.getLong(c.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)));
-                Log.d(getClass().getName(),
-                        "COLUMN_LAST_MODIFIED_TIMESTAMP: "
-                                + c.getLong(c.getColumnIndex(DownloadManager.COLUMN_LAST_MODIFIED_TIMESTAMP)));
-                Log.d(getClass().getName(),
-                        "COLUMN_LOCAL_URI: "
-                                + c.getString(c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)));
-                Log.d(getClass().getName(),
-                        "COLUMN_STATUS: "
-                                + c.getInt(c.getColumnIndex(DownloadManager.COLUMN_STATUS)));
-                Log.d(getClass().getName(),
-                        "COLUMN_REASON: "
-                                + c.getInt(c.getColumnIndex(DownloadManager.COLUMN_REASON)));
-                //Log.e(LOG_TAG, "STATUS: " + downloadStatusMessage(c));
-                //Log.e(LOG_TAG, "REASON: " + downloadFailReason(c));
-                c.close();
-            }
-
-            /*
-            m_downloadHostsItem.setEnabled(true);
-
-            String action = intent.getAction();
-            DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-            if (DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(action)) {
-                long downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, 0);
-                Log.e(LOG_TAG, "FILE: " + downloadId);
-
-                DownloadManager.Query query = new DownloadManager.Query();
-                query.setFilterById(downloadId);
-                Cursor c = null;
-                if (dm != null) {
-                    c = dm.query(query);
-                }
-                if (c != null) {
-                    while (c.moveToNext()) {
-                        int columnIndex = c.getColumnIndex(DownloadManager.COLUMN_STATUS);
-                        if (DownloadManager.STATUS_SUCCESSFUL == c.getInt(columnIndex)) {
-                            // We've finished all downloads
-                            showToast("All HOSTS-files were successfully downloaded!", Color.GREEN, Color.BLACK);
-                            m_downloadHostsItem.setEnabled(true);
-                            m_downloadIds.clear();
-                        }
-                    }
-                }
-            }
-            */
-        }
-    };
-
-    BroadcastReceiver onNotificationClick = new BroadcastReceiver() {
-        public void onReceive(Context context, Intent intent) {
-            showToast("Now you can download/update HOSTS-files, thanks!", Color.GREEN, Color.BLACK);
-            m_downloadHostsItem.setEnabled(true);
-        }
-    };
-
-    private void initDownloadManager() {
-        m_downloadManager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-
-        registerReceiver(onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
-        registerReceiver(onNotificationClick, new IntentFilter(DownloadManager.ACTION_NOTIFICATION_CLICKED));
-    }
-
-    private void destroyDownloadManager() {
-        unregisterReceiver(onComplete);
-        unregisterReceiver(onNotificationClick);
-    }
-
-    private void startFileDownload(String urlStr, String localFileName) {
-        Uri uri = Uri.parse(urlStr);
-
-        DownloadManager.Request request = new DownloadManager.Request(uri);
-        request.setAllowedNetworkTypes(DownloadManager.Request.NETWORK_WIFI | DownloadManager.Request.NETWORK_MOBILE);
-        request.setAllowedOverRoaming(false);
-        request.setTitle("Demo");
-        request.setDescription("Something useful. No, really.");
-        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, localFileName);
-
-        long downloadId = m_downloadManager.enqueue(request);
-        m_downloadIds.add(downloadId);
-        Log.i(LOG_TAG, "Enqueue download of '" + localFileName + "' with DMID = " + downloadId);
-
-        m_downloadHostsItem.setEnabled(false);
-    }
-
-    ////////////////////////////////////////////////////////////////////////////////////////////////
-
-    private class HostsFileSource {
-        public String m_remoteUrl;
-        public String m_localFileName;
-
-        public HostsFileSource(String remoteUrl, String localFileName) {
-            m_remoteUrl = remoteUrl;
-            m_localFileName = localFileName;
-        }
-    }
-
-    private List<HostsFileSource> getDefaultHostsFileList() {
+    private List<RemoteFileDescription> getDefaultHostsFileList() {
         // The default lists for Pi-Hole are (edited to remove a list that expired July 2019):
-        List<HostsFileSource> result = new ArrayList<>();
+        List<RemoteFileDescription> result = new ArrayList<>();
 
-        result.add(new HostsFileSource("https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts", "hosts_1.txt"));
-        result.add(new HostsFileSource("https://mirror1.malwaredomains.com/files/justdomains", "hosts_2.txt"));
+        result.add(new RemoteFileDescription("https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts", "hosts_1.txt"));
+        result.add(new RemoteFileDescription("https://mirror1.malwaredomains.com/files/justdomains", "hosts_2.txt"));
         // FIXME: return HTTP error 400 (Bad request) on Android 9.0 without android:usesCleartextTraffic="true" in manifest
-        result.add(new HostsFileSource("http://sysctl.org/cameleon/hosts", "hosts_3.txt"));
-        result.add(new HostsFileSource("https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt", "hosts_4.txt"));
-        result.add(new HostsFileSource("https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt", "hosts_5.txt"));
-        result.add(new HostsFileSource("https://hosts-file.net/ad_servers.txt", "hosts_6.txt"));
+        result.add(new RemoteFileDescription("http://sysctl.org/cameleon/hosts", "hosts_3.txt"));
+        result.add(new RemoteFileDescription("https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt", "hosts_4.txt"));
+        result.add(new RemoteFileDescription("https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt", "hosts_5.txt"));
+        result.add(new RemoteFileDescription("https://hosts-file.net/ad_servers.txt", "hosts_6.txt"));
 
         return result;
     }
 
-    private void startDownloadHostsFileFromList(final List<HostsFileSource> hostsFileSourceList) {
-        // 1) check whether we still have permissions to read/write from/to "Download" directory
-        //    (user can revoke permissions at any time!)
-        if (!hasRuntimePermissions(this, m_storagePermissions)) {
-            Log.e(LOG_TAG, "Storage access permissions not granted, aborted!");
-            Toast.makeText(getApplicationContext(), "Storage access permissions not granted, aborted!", Toast.LENGTH_LONG).show();
-            return;
-        }
+    private void startDownloadHostsFileFromList(final List<RemoteFileDescription> hostsFileSourceList) {
 
-        // 2) Ensure "Download" directory exists
-        File downloadDirectory = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        if (!downloadDirectory.exists()) {
-            if (!downloadDirectory.mkdirs()) {
-                showToast("Unable to create 'Download' directory! Please contact technical support", Color.RED, Color.BLACK);
-                return;
-            }
-        }
-
-        // 3) Check Internet connection and warn about big file download through cellular one
+        // Check Internet connection and warn about big file download through cellular one
         switch (checkInternetConnection()) {
             case INVALID:
                 showToast("No internet connection found! Please connect to Wi-Fi network and try again", Color.RED, Color.BLACK);
@@ -590,27 +282,59 @@ public class ScrollingActivity extends AppCompatActivity
         }
     }
 
-    private void doDownloadHostsFileFromList(List<HostsFileSource> hostsFileSourceList) {
-        assert hostsFileSourceList.size() == 6;
-        for (HostsFileSource hfs : hostsFileSourceList) {
-            // Remove file if already downloaded (HOSTS-files are frequently updated)
-            File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            // Android 8.0+:
-            //Path path = Paths.get("foo", "bar", "baz.txt");
-            File hostsFile = new File(combinePaths(downloadDir.getPath(), hfs.m_localFileName));
-            if (hostsFile.exists()) {
-                Log.i(LOG_TAG, "Trying to delete HOSTS-file " + hostsFile.getAbsolutePath() + "...");
-                if ((!hostsFile.delete())) throw new AssertionError();
-                Log.i(LOG_TAG, "Done!");
-            } else {
-                Log.w(LOG_TAG, "HOSTS-file '" + hostsFile.getAbsolutePath() + "' was not found");
+    private void doDownloadHostsFileFromList(List<RemoteFileDescription> hostsFileSourceList) {
+        m_downloadHostsItem.setEnabled(false);
+
+        DownloadHelperTask task = new DownloadHelperTask( ScrollingActivity.this, m_onDownloadFinishedListener);
+        task.execute(hostsFileSourceList.toArray(new RemoteFileDescription[0]));
+    }
+
+    protected OnDownloadFinishedListener m_onDownloadFinishedListener = new OnDownloadFinishedListener() {
+        public void onSuccess() {
+            AlertDialog.Builder builder = new AlertDialog.Builder(ScrollingActivity.this);
+            builder.setPositiveButton("Okay", new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int which) {
+                    dialog.cancel();
+                }
+            });
+            builder.setMessage("Success");
+            builder.show();
+        }
+
+        public void onFailure(String message) {
+            AlertDialog.Builder builder = new AlertDialog.Builder(ScrollingActivity.this);
+            builder.setPositiveButton("Okay", new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int which) {
+                    dialog.cancel();
+                }
+            });
+            builder.setMessage("Failure. Message: " + message);
+            builder.show();
+        }
+    };
+
+    protected IReportable m_reportable = new IReportable() {
+        @Override
+        public void addMessage(String message) {
+            class OneShotTask implements Runnable {
+                private String m_text;
+
+                private OneShotTask(String text) { m_text = text; }
+
+                public void run() {
+                    // Append a line to TextView
+                    TextView txtJournal = ScrollingActivity.this.findViewById(R.id.txtJournal);
+                    txtJournal.append(m_text + "\n");
+
+                    // Scroll contents to bottom
+                    NestedScrollView scrollView = ScrollingActivity.this.findViewById(R.id.scroll_view_1);
+                    scrollView.fullScroll(View.FOCUS_DOWN);
+                }
             }
 
-            // Download each file to default "Downloads" directory (i.e. start download process)
-            Log.i(LOG_TAG, "Start downloading '" + hfs.m_localFileName + "'...");
-            startFileDownload(hfs.m_remoteUrl, hfs.m_localFileName);
+            runOnUiThread(new OneShotTask(message));
         }
-    }
+    };
 
     private boolean parseHostsFile(String fileContents, List<String> urls) {
         String[] fileContentsLines = fileContents.split("\\R+"); // "\\r?\\n"
@@ -648,11 +372,149 @@ public class ScrollingActivity extends AppCompatActivity
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
 
-    private class HostsReachabilityChecker extends AsyncTask<String, Integer, Long> {
+    /**
+     * Helper class for async download of several files to application private storage.
+     * Returns number of files that were actually downloaded
+     *
+     * NOTE:
+     * Usually subclasses of AsyncTask are declared inside the activity class.
+     * That way you can easily modify the UI thread from here
+     */
+    private static class DownloadHelperTask extends AsyncTask<RemoteFileDescription, Integer, RemoteFileDownloadResult[]> {
+
+        private PowerManager.WakeLock m_wakeLock;
         private ProgressDialog m_progressDialog;
+        private WeakReference<Context> m_contextRef;
+        private OnDownloadFinishedListener m_responder;
+        private int m_remoteFileCount;
 
+        DownloadHelperTask(Context context, OnDownloadFinishedListener responder) {
+            m_contextRef = new WeakReference<>(context);
+            m_responder = responder;
 
-        public HostsReachabilityChecker() {
+            Log.i(LOG_TAG, "Downloader: init");
+        }
+
+        @Override
+        protected RemoteFileDownloadResult[] doInBackground(RemoteFileDescription... urlStrings) {
+            m_remoteFileCount = urlStrings.length;
+
+            Log.i(LOG_TAG, String.format("Downloader: starting downloading of %d URLs...", urlStrings.length));
+
+            List<RemoteFileDownloadResult> result = new ArrayList<>();
+
+            // First we need to check remote file availability at all,
+            // and query sizes to display download percentage later
+            List<RemoteFileDescription> availableUrlStrings = new ArrayList<>();
+            int totalFileLength = 0;
+            for (RemoteFileDescription urlString : urlStrings) {
+                RemoteFileInfo rfi = getRemoteFileInfo(urlString.m_remoteUrl);
+                if (rfi.isReachable) {
+                    availableUrlStrings.add(urlString);
+
+                    if (rfi.fileLength > 0) {
+                        totalFileLength += rfi.fileLength;
+                        Log.i(LOG_TAG, String.format("Downloader: remote file '%s' length is %d bytes",
+                                urlString.m_remoteUrl, rfi.fileLength));
+                    } else {
+                        // FIXME: hack! just to show progress bar, assume our file have 2 Mb size;
+                        //        HOSTS-file rarely exceed that size
+                        Log.e(LOG_TAG,  String.format("Downloader: remote file '%s' length is not known",
+                                urlString.m_remoteUrl));
+                        totalFileLength += 2_000_000;
+                    }
+                } else {
+                    Log.e(LOG_TAG, String.format("Downloader: remote file '%s' is not available",
+                            urlString.m_remoteUrl));
+                }
+            }
+
+            if (availableUrlStrings.size() != urlStrings.length) {
+                Log.w(LOG_TAG, String.format("Downloader: only %d URLs are available now from %d specified",
+                        availableUrlStrings.size(), urlStrings.length));
+            } else {
+                Log.i(LOG_TAG, "Downloader: all URLs are available");
+            }
+
+            InputStream input = null;
+            OutputStream output = null;
+            HttpURLConnection connection = null;
+
+            for (int i = 0; i < availableUrlStrings.size(); i++) {
+                try {
+                    RemoteFileDescription remoteFileDescription = availableUrlStrings.get(i);
+                    RemoteFileDownloadResult tempResult = new RemoteFileDownloadResult();
+
+                    URL url = new URL(remoteFileDescription.m_remoteUrl);
+                    connection = (HttpURLConnection) url.openConnection();
+                    connection.connect();
+
+                    // We expect HTTP 200 OK, so we don't mistakenly save error report instead of the file
+                    if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                        throw new IOException("Server returned HTTP" +
+                                " " + connection.getResponseCode() + " " +
+                                connection.getResponseMessage());
+                    }
+
+                    // Download the file
+                    input = connection.getInputStream();
+                    // NOTE: uncomment to save file to External Storage (need appropriate permissions)
+                    //output = new FileOutputStream("/sdcard/file_name.extension");
+                    Context context = m_contextRef.get();
+                    if (context == null) {
+                        throw new IOException("Context is not available: unable to create file in internal storage");
+                    }
+                    output = context.openFileOutput(remoteFileDescription.m_localFileName, Context.MODE_PRIVATE);
+                    Log.i(LOG_TAG, String.format("Downloader: empty file '%s' was created in Internal Storage",
+                            remoteFileDescription.m_localFileName));
+
+                    byte[] data = new byte[4096];
+                    long actualFileLength = 0;
+                    int bytesRead;
+                    while ((bytesRead = input.read(data)) != -1) {
+                        // Allow canceling download with back button
+                        if (isCancelled()) {
+                            input.close();
+                            return null;
+                        }
+                        actualFileLength += bytesRead;
+
+                        // Copy chunk of data to output file
+                        output.write(data, 0, bytesRead);
+
+                        // Publishing the progress
+                        publishProgress((int) ((actualFileLength / (float) totalFileLength) * 100));
+                    }
+                    output.close();
+                    input.close();
+
+                    Log.i(LOG_TAG, String.format("Downloader: downloaded file '%s' of %d bytes long",
+                            remoteFileDescription.m_localFileName, actualFileLength));
+
+                    tempResult.path = remoteFileDescription.m_localFileName;
+                    tempResult.length = actualFileLength;
+                    tempResult.errorMessage = "";
+                    tempResult.isValid = true;
+
+                    result.add(tempResult);
+                } catch (IOException e) {
+                    Log.e(LOG_TAG, e.toString());
+                    return null;
+                } finally {
+                    try {
+                        if (output != null)
+                            output.close();
+                        if (input != null)
+                            input.close();
+                    } catch (IOException ignored) {
+                    }
+
+                    if (connection != null)
+                        connection.disconnect();
+                }
+            }
+
+            return result.toArray(new RemoteFileDownloadResult[0]);
         }
 
         /**
@@ -663,14 +525,141 @@ public class ScrollingActivity extends AppCompatActivity
         protected void onPreExecute() {
             super.onPreExecute();
 
-            m_progressDialog = new ProgressDialog(ScrollingActivity.this);
+            // Take CPU lock to prevent CPU from going off if the user presses the power button during download
+            Context context = m_contextRef.get();
+            if (context == null) {
+                Log.e(LOG_TAG, "Context is not available: unable to create download progress dialog");
+                return;
+            }
+            PowerManager pm = (PowerManager)context.getSystemService(Context.POWER_SERVICE);
+            if (pm == null) {
+                Log.e(LOG_TAG, "PowerManager is not available: unable to create download progress dialog");
+                return;
+            }
+            m_wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, getClass().getName());
+            m_wakeLock.acquire(600_000); // 10 minutes == 600 000 milliseconds
+
+            m_progressDialog = new ProgressDialog(context);
             m_progressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
             m_progressDialog.setCancelable(false);
-            //m_progressDialog.show();
+            m_progressDialog.setIndeterminate(false);
+            m_progressDialog.setMax(100);
+            m_progressDialog.show();
+        }
+
+        @Override
+        protected void onProgressUpdate(Integer... progress) {
+            super.onProgressUpdate(progress);
+
+            m_progressDialog.setProgress(progress[0]);
+        }
+
+        @Override
+        protected void onPostExecute(RemoteFileDownloadResult[] result) {
+            m_wakeLock.release();
+
+            // Dismiss the dialog after the file was downloaded
+            if (m_progressDialog.isShowing())
+                m_progressDialog.dismiss();
+
+            if (result.length == m_remoteFileCount) {
+                Log.i(LOG_TAG, "Downloader: successfully downloaded " + result.length + " files");
+                m_responder.onSuccess();
+            } else {
+                Log.e(LOG_TAG, "Downloader: no files were downloaded");
+                m_responder.onFailure("Error");
+            }
+        }
+
+        private class RemoteFileInfo
+        {
+            boolean isReachable = false;
+            int fileLength = -1;
+        }
+
+        private RemoteFileInfo getRemoteFileInfo(String urlString) {
+            RemoteFileInfo rfi = new RemoteFileInfo();
+
+            HttpURLConnection connection = null;
+            try {
+                URL url = new URL(urlString);
+                connection = (HttpURLConnection) url.openConnection();
+                connection.connect();
+
+                // We expect HTTP 200 OK, so we don't mistakenly save error report instead of the file
+                if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                    Log.e(LOG_TAG, "Server returned HTTP" +
+                            " " + connection.getResponseCode() + " " +
+                            connection.getResponseMessage());
+                    rfi.isReachable = false;
+                    rfi.fileLength = -1;
+                    return rfi;
+                }
+
+                // NOTE: might be -1 if server did not report the length
+                rfi.fileLength = connection.getContentLength();
+                rfi.isReachable = true;
+            } catch (IOException exc) {
+                Log.e(LOG_TAG, "Unable to get remote file length");
+                exc.printStackTrace();
+            } finally {
+                if (connection != null)
+                    connection.disconnect();
+            }
+            return rfi;
+        }
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////
+
+    private static class HostsAvailabilityChecker extends AsyncTask<String, Integer, Long> {
+
+        private PowerManager.WakeLock m_wakeLock;
+        private ProgressDialog m_progressDialog;
+        private WeakReference<Context> m_contextRef;
+        private IReportable m_reportable;
+
+
+        HostsAvailabilityChecker(@NonNull Context context, @NonNull IReportable reportable) {
+            m_contextRef = new WeakReference<>(context);
+            m_reportable = reportable;
+
+            Log.i(LOG_TAG, "Checker: init");
+        }
+
+
+        /**
+         * Before starting background thread
+         * Show Progress Bar Dialog
+         */
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+
+            // Take CPU lock to prevent CPU from going off if the user presses the power button during download
+            Context context = m_contextRef.get();
+            if (context == null) {
+                Log.e(LOG_TAG, "Context is not available: unable to create download progress dialog");
+                return;
+            }
+            PowerManager pm = (PowerManager)context.getSystemService(Context.POWER_SERVICE);
+            if (pm == null) {
+                Log.e(LOG_TAG, "PowerManager is not available: unable to create download progress dialog");
+                return;
+            }
+            m_wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, getClass().getName());
+            m_wakeLock.acquire(600_000); // 10 minutes == 600 000 milliseconds
+
+            m_progressDialog = new ProgressDialog(context);
+            m_progressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+            m_progressDialog.setCancelable(false);
+            m_progressDialog.setIndeterminate(false);
+            m_progressDialog.setMax(100);
+            m_progressDialog.show();
         }
 
         /**
-         * Downloading file in background thread
+         * Checking whether hosts are available in background thread
          */
         @Override
         protected Long doInBackground(String... hosts) {
@@ -684,15 +673,16 @@ public class ScrollingActivity extends AppCompatActivity
             for (int i = 0; i < hosts.length; i ++) {
                 try {
                     InetAddress[] hostIpList = InetAddress.getAllByName(hosts[i]);
-                    assert hostIpList.length > 0;
+                    if (hostIpList.length == 0)
+                        throw new UnknownHostException(hosts[i]);
 
                     actualHostCount++;
                     //Log.i(LOG_TAG, "Domain '" + hosts[i] + "' IP addresses are " + Arrays.toString(hostIpList));
-                    addLineToJournal("Domain '" + hosts[i] + "' IP addresses are " + Arrays.toString(hostIpList));
+                    m_reportable.addMessage("Domain '" + hosts[i] + "' IP addresses are " + Arrays.toString(hostIpList));
 
                     boolean isReachable = false;
                     for (InetAddress hostIp : hostIpList) {
-                        if (hostIp.isReachable(1000 /*ms*/)) {
+                        if (hostIp.isReachable(1000)) { // milliseconds, i.e. 1 second
                             isReachable = true;
                             break;
                         }
@@ -703,10 +693,12 @@ public class ScrollingActivity extends AppCompatActivity
                     else
                         blockedHostCount++;
                 } catch (UnknownHostException exc) {
-                    Log.e(LOG_TAG, "IP address of a host '" + hosts[i] + "' could not be determined");
+                    //Log.e(LOG_TAG, "IP address of a host '" + hosts[i] + "' could not be determined");
+                    m_reportable.addMessage("IP address of a host '" + hosts[i] + "' could not be determined");
                     obsoleteHostCount++;
                 } catch (IOException exc) {
                     Log.e(LOG_TAG, "Network error occurs");
+                    m_reportable.addMessage("Network error occurs");
                 }
 
                 publishProgress((int) ((i / (float) hosts.length) * 100));
@@ -720,12 +712,12 @@ public class ScrollingActivity extends AppCompatActivity
             Log.i(LOG_TAG, "WORKING HOSTS: " + workingHostCount);
             Log.i(LOG_TAG, "BLOCKED HOSTS: " + blockedHostCount);
             Log.i(LOG_TAG, "TOTAL HOSTS: 1 = " + hosts.length + ", 2 = " + (workingHostCount + blockedHostCount));
-            addLineToJournal("");
-            addLineToJournal("OBSOLETE HOSTS: " + obsoleteHostCount);
-            addLineToJournal("ACTUAL HOSTS: " + actualHostCount);
-            addLineToJournal("WORKING HOSTS: " + workingHostCount);
-            addLineToJournal("BLOCKED HOSTS: " + blockedHostCount);
-            addLineToJournal("TOTAL HOSTS: 1 = " + hosts.length + ", 2 = " + (workingHostCount + blockedHostCount));
+            m_reportable.addMessage("");
+            m_reportable.addMessage("OBSOLETE HOSTS: " + obsoleteHostCount);
+            m_reportable.addMessage("ACTUAL HOSTS: " + actualHostCount);
+            m_reportable.addMessage("WORKING HOSTS: " + workingHostCount);
+            m_reportable.addMessage("BLOCKED HOSTS: " + blockedHostCount);
+            m_reportable.addMessage("TOTAL HOSTS: 1 = " + hosts.length + ", 2 = " + (workingHostCount + blockedHostCount));
 
             return blockedHostCount;
         }
@@ -734,6 +726,8 @@ public class ScrollingActivity extends AppCompatActivity
          * Updating progress bar
          */
         protected void onProgressUpdate(Integer... progress) {
+            super.onProgressUpdate(progress);
+
             // Set progress percentage
             m_progressDialog.setProgress(progress[0]);
         }
@@ -741,11 +735,19 @@ public class ScrollingActivity extends AppCompatActivity
 
         @Override
         protected void onPostExecute(Long result) {
-            // Dismiss the dialog after the file was downloaded
-            m_progressDialog.dismiss();
+            m_wakeLock.release();
 
-            // Display File path after downloading
-            //Toast.makeText(getApplicationContext(), message, Toast.LENGTH_LONG).show();
+            // Dismiss the dialog after the file was downloaded
+            if (m_progressDialog.isShowing())
+                m_progressDialog.dismiss();
+
+            if (result == 0) {
+                Log.i(LOG_TAG, "Checker: ok");
+                //m_responder.onSuccess();
+            } else {
+                Log.e(LOG_TAG, "Checker: fail");
+                //m_responder.onFailure("Error");
+            }
         }
     }
 
@@ -794,16 +796,6 @@ public class ScrollingActivity extends AppCompatActivity
         toast.show();
     }
 
-    private static String combinePaths(String... paths) {
-        File file = new File(paths[0]);
-
-        for (int i = 1; i < paths.length; i++) {
-            file = new File(file, paths[i]);
-        }
-
-        return file.getPath();
-    }
-
     private static String readTextFile(File file) {
         String result = "";
 
@@ -847,27 +839,8 @@ public class ScrollingActivity extends AppCompatActivity
         return !isArrayContains(localDomains, domainAddress.toLowerCase());
     }
 
-    private void exitApplication() {
+    private void quitApplication() {
         finishAffinity();
         System.exit(0);
-    }
-
-    void addLineToJournal(String text) {
-        class OneShotTask implements Runnable {
-            String m_text;
-
-            OneShotTask(String text) { m_text = text; }
-
-            public void run() {
-                // Append a line to TextView
-                TextView txtJournal = ScrollingActivity.this.findViewById(R.id.txtJournal);
-                txtJournal.append(m_text + "\n");
-
-                // Scroll contents to bottom
-                NestedScrollView scrollView = ScrollingActivity.this.findViewById(R.id.scroll_view_1);
-                scrollView.fullScroll(View.FOCUS_DOWN);
-            }
-        }
-        runOnUiThread(new OneShotTask(text));
     }
 }
