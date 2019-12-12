@@ -22,7 +22,6 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
-import androidx.core.app.ActivityCompat;
 import androidx.core.widget.NestedScrollView;
 
 import android.os.PowerManager;
@@ -49,10 +48,13 @@ import java.net.URL;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
-public class ScrollingActivity extends AppCompatActivity
-        implements ActivityCompat.OnRequestPermissionsResultCallback {
+import static java.lang.Math.min;
+
+public class ScrollingActivity extends AppCompatActivity {
 
     // NOTE: List of Pair<String,String> cannot be passed to vararg function,
     //       so we need to describe it as separate structure
@@ -73,6 +75,13 @@ public class ScrollingActivity extends AppCompatActivity
         String errorMessage;
     }
 
+    private static class HostAvailabilityCheckResult {
+        long obsoleteHostCount = 0L;
+        long actualHostCount = 0L;
+        long workingHostCount = 0L;
+        long blockedHostCount = 0L;
+    }
+
     private interface OnDownloadFinishedListener {
         void onSuccess();
         void onFailure(String message);
@@ -82,10 +91,18 @@ public class ScrollingActivity extends AppCompatActivity
         void addMessage(String message);
     }
 
+    private interface OnHostAvailabilityListener {
+        void onSuccess(HostAvailabilityCheckResult result);
+        void onFailure(String message);
+    }
+
     private static final String LOG_TAG = "OSO";
 
     //private View m_layout;
     private MenuItem m_downloadHostsItem;
+
+    private int m_hostAvailabilityThreadCount;
+    private List<HostAvailabilityCheckResult> m_hostAvailabilityResults;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -186,11 +203,18 @@ public class ScrollingActivity extends AppCompatActivity
                 privateStorageDir.getAbsolutePath()));
 
         // List only HOSTS-files
+        final List<RemoteFileDescription> defaultHostsFiles = getDefaultHostsFileList();
         File[] hostsFiles = privateStorageDir.listFiles(new FileFilter() {
             @Override
             public boolean accept(File file) {
-                Log.e(LOG_TAG, file.getName());
-                return (file.getName().startsWith("hosts_") && file.getName().endsWith(".txt"));
+                Log.v(LOG_TAG, "Internal Storage file found: " + file.getName());
+
+                String fileName = file.getName();
+                for (RemoteFileDescription rfd : defaultHostsFiles) {
+                    if (fileName.equals(rfd.m_localFileName))
+                        return true;
+                }
+                return false;
             }
         });
         if (hostsFiles == null || hostsFiles.length == 0) {
@@ -225,8 +249,30 @@ public class ScrollingActivity extends AppCompatActivity
         if (parseHostsFile(finalHostsFile.toString(), hostsUrls)) {
             Log.i(LOG_TAG, String.format("Merged HOSTS-file was parsed successfully: %d records found", hostsUrls.size()));
 
-            HostsAvailabilityChecker task = new HostsAvailabilityChecker(ScrollingActivity.this, m_reportable);
-            task.execute(hostsUrls.toArray(new String[0]));
+            int numCores = Runtime.getRuntime().availableProcessors();
+            Log.i(LOG_TAG, "CPU core count: " + numCores);
+
+            // FIXME: 6 or more threads heats CPU too much during just 1 hour!
+            numCores = min(4, numCores);
+            Log.i(LOG_TAG, "CPU core count (optimal): " + numCores);
+
+            int recordPortion = hostsUrls.size() / numCores;
+            Log.i(LOG_TAG, String.format("Merged HOSTS-file portion for one thread: %d records", recordPortion));
+
+            m_hostAvailabilityThreadCount = numCores;
+            m_hostAvailabilityResults = null;
+            //m_hostAvailabilityResults = new ArrayList<>(numCores);
+            m_hostAvailabilityResults = Collections.synchronizedList(new ArrayList<HostAvailabilityCheckResult>(numCores));
+
+            for (int i = 0; i <  numCores; i++) {
+                int from = i * recordPortion;
+                int to = from + recordPortion;
+                Log.v(LOG_TAG, String.format("from %d to %d", from, to));
+                List<String> subList = hostsUrls.subList(from, to);
+                Thread t = new HostsAvailabilityCheckerThread(m_reportable, m_onHostAvailabilityListener, subList.toArray(new String[0]));
+                t.setName("thread_" + i);
+                t.start();
+            }
         }
     }
 
@@ -236,13 +282,15 @@ public class ScrollingActivity extends AppCompatActivity
         // The default lists for Pi-Hole are (edited to remove a list that expired July 2019):
         List<RemoteFileDescription> result = new ArrayList<>();
 
-        result.add(new RemoteFileDescription("https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts", "hosts_1.txt"));
-        result.add(new RemoteFileDescription("https://mirror1.malwaredomains.com/files/justdomains", "hosts_2.txt"));
+        result.add(new RemoteFileDescription("https://raw.githubusercontent.com/eraxillan/blacklists/master/trackers.txt", "trackers_1.txt"));
+
+//        result.add(new RemoteFileDescription("https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts", "hosts_1.txt"));
+//        result.add(new RemoteFileDescription("https://mirror1.malwaredomains.com/files/justdomains", "hosts_2.txt"));
         // FIXME: return HTTP error 400 (Bad request) on Android 9.0 without android:usesCleartextTraffic="true" in manifest
-        result.add(new RemoteFileDescription("http://sysctl.org/cameleon/hosts", "hosts_3.txt"));
-        result.add(new RemoteFileDescription("https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt", "hosts_4.txt"));
-        result.add(new RemoteFileDescription("https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt", "hosts_5.txt"));
-        result.add(new RemoteFileDescription("https://hosts-file.net/ad_servers.txt", "hosts_6.txt"));
+//        result.add(new RemoteFileDescription("http://sysctl.org/cameleon/hosts", "hosts_3.txt"));
+//        result.add(new RemoteFileDescription("https://s3.amazonaws.com/lists.disconnect.me/simple_tracking.txt", "hosts_4.txt"));
+//        result.add(new RemoteFileDescription("https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt", "hosts_5.txt"));
+//        result.add(new RemoteFileDescription("https://hosts-file.net/ad_servers.txt", "hosts_6.txt"));
 
         return result;
     }
@@ -290,6 +338,8 @@ public class ScrollingActivity extends AppCompatActivity
     }
 
     protected OnDownloadFinishedListener m_onDownloadFinishedListener = new OnDownloadFinishedListener() {
+
+        @Override
         public void onSuccess() {
             AlertDialog.Builder builder = new AlertDialog.Builder(ScrollingActivity.this);
             builder.setPositiveButton("Okay", new DialogInterface.OnClickListener() {
@@ -301,6 +351,7 @@ public class ScrollingActivity extends AppCompatActivity
             builder.show();
         }
 
+        @Override
         public void onFailure(String message) {
             AlertDialog.Builder builder = new AlertDialog.Builder(ScrollingActivity.this);
             builder.setPositiveButton("Okay", new DialogInterface.OnClickListener() {
@@ -310,6 +361,52 @@ public class ScrollingActivity extends AppCompatActivity
             });
             builder.setMessage("Failure. Message: " + message);
             builder.show();
+        }
+    };
+
+    protected OnHostAvailabilityListener m_onHostAvailabilityListener = new OnHostAvailabilityListener() {
+
+        @Override
+        public void onSuccess(HostAvailabilityCheckResult result) {
+            synchronized (m_hostAvailabilityResults) {
+                m_hostAvailabilityResults.add(result);
+
+                if (m_hostAvailabilityResults.size() == m_hostAvailabilityThreadCount) {
+                    Log.i(LOG_TAG, "Checker: all threads finished!");
+
+                    HostAvailabilityCheckResult finalResult = new HostAvailabilityCheckResult();
+                    for (HostAvailabilityCheckResult tempResult : m_hostAvailabilityResults) {
+                        finalResult.obsoleteHostCount += tempResult.obsoleteHostCount;
+                        finalResult.actualHostCount += tempResult.actualHostCount;
+                        finalResult.workingHostCount += tempResult.workingHostCount;
+                        finalResult.blockedHostCount += tempResult.blockedHostCount;
+                    }
+
+                    Log.i(LOG_TAG, "");
+                    Log.i(LOG_TAG, "OBSOLETE HOSTS: " + finalResult.obsoleteHostCount);
+                    Log.i(LOG_TAG, "ACTUAL HOSTS: " + finalResult.actualHostCount);
+                    Log.i(LOG_TAG, "WORKING HOSTS: " + finalResult.workingHostCount);
+                    Log.i(LOG_TAG, "BLOCKED HOSTS: " + finalResult.blockedHostCount);
+                    m_reportable.addMessage("");
+                    m_reportable.addMessage("OBSOLETE HOSTS: " + finalResult.obsoleteHostCount);
+                    m_reportable.addMessage("ACTUAL HOSTS: " + finalResult.actualHostCount);
+                    m_reportable.addMessage("WORKING HOSTS: " + finalResult.workingHostCount);
+                    m_reportable.addMessage("BLOCKED HOSTS: " + finalResult.blockedHostCount);
+                }
+            }
+        }
+
+        @Override
+        public void onFailure(String message) {
+            /*AlertDialog.Builder builder = new AlertDialog.Builder(ScrollingActivity.this);
+            builder.setPositiveButton("Okay", new DialogInterface.OnClickListener() {
+                public void onClick(DialogInterface dialog, int which) {
+                    dialog.cancel();
+                }
+            });
+            builder.setMessage("Failure. Message: " + message);
+            builder.show();*/
+            Log.e(LOG_TAG, "ERROR: " + message);
         }
     };
 
@@ -612,73 +709,43 @@ public class ScrollingActivity extends AppCompatActivity
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
 
-    private static class HostsAvailabilityChecker extends AsyncTask<String, Integer, Long> {
+    class HostsAvailabilityCheckerThread extends Thread {
 
-        private PowerManager.WakeLock m_wakeLock;
-        private ProgressDialog m_progressDialog;
-        private WeakReference<Context> m_contextRef;
+        private static final String LOG_TAG = "OSO::CheckerThread";
         private IReportable m_reportable;
+        private OnHostAvailabilityListener m_listener;
+        private String[] m_hosts;
 
+        HostsAvailabilityCheckerThread(
+                @NonNull IReportable reportable,
+                @NonNull OnHostAvailabilityListener listener,
+                @NonNull String[] hosts) {
 
-        HostsAvailabilityChecker(@NonNull Context context, @NonNull IReportable reportable) {
-            m_contextRef = new WeakReference<>(context);
             m_reportable = reportable;
-
-            Log.i(LOG_TAG, "Checker: init");
+            m_listener = listener;
+            m_hosts = hosts;
         }
 
-
-        /**
-         * Before starting background thread
-         * Show Progress Bar Dialog
-         */
         @Override
-        protected void onPreExecute() {
-            super.onPreExecute();
+        public void run() {
 
-            // Take CPU lock to prevent CPU from going off if the user presses the power button during download
-            Context context = m_contextRef.get();
-            if (context == null) {
-                Log.e(LOG_TAG, "Context is not available: unable to create download progress dialog");
+            if (m_hosts == null || m_hosts.length == 0) {
+                Log.e(LOG_TAG, "Hosts list is empty, nothing to do here");
                 return;
             }
-            PowerManager pm = (PowerManager)context.getSystemService(Context.POWER_SERVICE);
-            if (pm == null) {
-                Log.e(LOG_TAG, "PowerManager is not available: unable to create download progress dialog");
-                return;
-            }
-            m_wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, getClass().getName());
-            m_wakeLock.acquire(600_000); // 10 minutes == 600 000 milliseconds
+            Log.i(LOG_TAG, "HOSTS-file domain count: " + m_hosts.length);
 
-            m_progressDialog = new ProgressDialog(context);
-            m_progressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
-            m_progressDialog.setCancelable(false);
-            m_progressDialog.setIndeterminate(false);
-            m_progressDialog.setMax(100);
-            m_progressDialog.show();
-        }
-
-        /**
-         * Checking whether hosts are available in background thread
-         */
-        @Override
-        protected Long doInBackground(String... hosts) {
-
-            Log.i(LOG_TAG, "HOSTS-file domain count: " + hosts.length);
-
-            long obsoleteHostCount = 0L;
-            long actualHostCount = 0L;
-            long workingHostCount = 0L;
-            long blockedHostCount = 0L;
-            for (int i = 0; i < hosts.length; i ++) {
+            HostAvailabilityCheckResult result = new HostAvailabilityCheckResult();
+            for (int i = 0; i < m_hosts.length; i ++) {
                 try {
-                    InetAddress[] hostIpList = InetAddress.getAllByName(hosts[i]);
+                    InetAddress[] hostIpList = InetAddress.getAllByName(m_hosts[i]);
                     if (hostIpList.length == 0)
-                        throw new UnknownHostException(hosts[i]);
+                        throw new UnknownHostException(m_hosts[i]);
 
-                    actualHostCount++;
-                    //Log.i(LOG_TAG, "Domain '" + hosts[i] + "' IP addresses are " + Arrays.toString(hostIpList));
-                    m_reportable.addMessage("Domain '" + hosts[i] + "' IP addresses are " + Arrays.toString(hostIpList));
+                    result.actualHostCount++;
+                    m_reportable.addMessage(String.format(Locale.getDefault(),
+                            "[tid %s][%d from %d] Domain '%s' IP addresses are %s",
+                            getName(), (i + 1), m_hosts.length,  m_hosts[i], Arrays.toString(hostIpList)));
 
                     boolean isReachable = false;
                     for (InetAddress hostIp : hostIpList) {
@@ -689,68 +756,29 @@ public class ScrollingActivity extends AppCompatActivity
                     }
 
                     if (isReachable)
-                        workingHostCount++;
+                        result.workingHostCount++;
                     else
-                        blockedHostCount++;
+                        result.blockedHostCount++;
                 } catch (UnknownHostException exc) {
-                    //Log.e(LOG_TAG, "IP address of a host '" + hosts[i] + "' could not be determined");
-                    m_reportable.addMessage("IP address of a host '" + hosts[i] + "' could not be determined");
-                    obsoleteHostCount++;
+                    m_reportable.addMessage(String.format("Unknown host '%s': IP address could not be determined", m_hosts[i]));
+
+                    result.obsoleteHostCount++;
                 } catch (IOException exc) {
-                    Log.e(LOG_TAG, "Network error occurs");
-                    m_reportable.addMessage("Network error occurs");
+                    m_reportable.addMessage(String.format("Skip host '%s' network error occurs", m_hosts[i]));
+
+                    //m_result.obsoleteHostCount++;
                 }
-
-                publishProgress((int) ((i / (float) hosts.length) * 100));
-                // Escape early if cancel() is called
-                if (isCancelled()) break;
             }
 
-            Log.i(LOG_TAG, "");
-            Log.i(LOG_TAG, "OBSOLETE HOSTS: " + obsoleteHostCount);
-            Log.i(LOG_TAG, "ACTUAL HOSTS: " + actualHostCount);
-            Log.i(LOG_TAG, "WORKING HOSTS: " + workingHostCount);
-            Log.i(LOG_TAG, "BLOCKED HOSTS: " + blockedHostCount);
-            Log.i(LOG_TAG, "TOTAL HOSTS: 1 = " + hosts.length + ", 2 = " + (workingHostCount + blockedHostCount));
-            m_reportable.addMessage("");
-            m_reportable.addMessage("OBSOLETE HOSTS: " + obsoleteHostCount);
-            m_reportable.addMessage("ACTUAL HOSTS: " + actualHostCount);
-            m_reportable.addMessage("WORKING HOSTS: " + workingHostCount);
-            m_reportable.addMessage("BLOCKED HOSTS: " + blockedHostCount);
-            m_reportable.addMessage("TOTAL HOSTS: 1 = " + hosts.length + ", 2 = " + (workingHostCount + blockedHostCount));
+            Log.i(LOG_TAG, String.format("Thread '%s' finished!", getName()));
 
-            return blockedHostCount;
+            if (result.actualHostCount > 0)
+                m_listener.onSuccess(result);
+            else
+                m_listener.onFailure("No available hosts found, maybe you have Internet connection problems?");
         }
 
-        /**
-         * Updating progress bar
-         */
-        protected void onProgressUpdate(Integer... progress) {
-            super.onProgressUpdate(progress);
-
-            // Set progress percentage
-            m_progressDialog.setProgress(progress[0]);
-        }
-
-
-        @Override
-        protected void onPostExecute(Long result) {
-            m_wakeLock.release();
-
-            // Dismiss the dialog after the file was downloaded
-            if (m_progressDialog.isShowing())
-                m_progressDialog.dismiss();
-
-            if (result == 0) {
-                Log.i(LOG_TAG, "Checker: ok");
-                //m_responder.onSuccess();
-            } else {
-                Log.e(LOG_TAG, "Checker: fail");
-                //m_responder.onFailure("Error");
-            }
-        }
     }
-
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // Utils
